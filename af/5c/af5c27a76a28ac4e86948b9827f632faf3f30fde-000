@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""Append dated project feedback without changing any existing byte."""
+# 2 October 2026, 12:55: Replace insertion and truncation with locked append and stable event IDs.
+import argparse
+import datetime as dt
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import sys
+import uuid
+
+DEFAULTS = {
+    "memory_root": Path.home() / ".claude/Memory1/Projects",
+    "registry_paths": [
+        Path.home() / "Create/Build/Productions/GithubProductions/ZenRayProgress/scripts/AssetsConfig.json",
+        Path.home() / "Library/Application Support/ZenRayAssets/Projects.json",
+    ],
+    "search_roots": [
+        Path.home() / "Create/Build/Productions/ZenRayHoudini",
+        Path.home() / "Create/Build/Productions/GithubProductions",
+        Path.home() / ".claude/tmp",
+    ],
+}
+KINDS = {
+    "prompt": "Prompt",
+    "order": "Order of work",
+    "rule": "Standing rule",
+    "log": "Log",
+    "iteration": "Iteration",
+    "provenance": "Historical source",
+}
+MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August",
+          "September", "October", "November", "December")
+PROJECT_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+
+
+def registry_projects(registry_paths=None):
+    projects = {}
+    for path in registry_paths or DEFAULTS["registry_paths"]:
+        path = Path(path).expanduser()
+        if not path.exists():
+            continue
+        data = json.loads(path.read_text(encoding="utf-8"))
+        records = data.get("projects", [])
+        if isinstance(records, dict):
+            records = [{"id": key, **value} for key, value in records.items()]
+        if not isinstance(records, list):
+            raise ValueError(f"invalid projects registry: {path}")
+        for project in records:
+            project_id = project.get("id", "")
+            if not PROJECT_ID.fullmatch(project_id):
+                raise ValueError(f"invalid project ID in registry: {path}")
+            projects[project_id] = {**projects.get(project_id, {}), **project}
+    return projects
+
+
+def project_feedback_path(project):
+    project_id = project["id"]
+    expected = (DEFAULTS["memory_root"] / project_id / "FEEDBACK.md").resolve()
+    configured = Path(project.get("feedbackPath") or expected).expanduser().resolve()
+    if configured != expected:
+        raise ValueError(f"feedbackPath must be the canonical project path: {expected}")
+    return configured
+
+
+def project_roots(project):
+    roots = []
+    if project.get("folder"):
+        roots.append(Path(project["folder"]).expanduser().resolve())
+    for source in project.get("sources", []):
+        if source.get("localPath"):
+            candidate = Path(source["localPath"]).expanduser().resolve()
+            if source.get("include"):
+                roots.extend(candidate / entry for entry in source["include"])
+            else:
+                roots.append(candidate)
+    return roots
+
+
+def project_for_directory(directory, projects):
+    directory = Path(directory).expanduser().resolve()
+    matches = []
+    for project in projects.values():
+        for root in project_roots(project):
+            if directory == root or root in directory.parents:
+                matches.append((len(root.parts), project))
+    if not matches:
+        return None
+    depth = max(item[0] for item in matches)
+    candidates = {item[1]["id"]: item[1] for item in matches if item[0] == depth}
+    if len(candidates) != 1:
+        raise ValueError(f"ambiguous project for directory: {directory}")
+    return next(iter(candidates.values()))
+
+
+def resolve_project(project, registry_paths=None, explicit_file=None):
+    if explicit_file:
+        path = Path(explicit_file).expanduser().resolve()
+        return {"id": Path(project).name, "name": Path(project).name}, path
+    projects = registry_projects(registry_paths)
+    if project in projects:
+        record = projects[project]
+        return record, project_feedback_path(record)
+    names = [record for record in projects.values() if record.get("name") == project]
+    if len(names) > 1:
+        raise ValueError(f"ambiguous project name, use its ID: {project}")
+    if names:
+        return names[0], project_feedback_path(names[0])
+    candidate = Path(project).expanduser()
+    if not candidate.is_dir():
+        candidate = next((root / project for root in DEFAULTS["search_roots"]
+                          if (root / project).is_dir()), candidate)
+    if candidate.is_dir():
+        candidate = candidate.resolve()
+        record = project_for_directory(candidate, projects)
+        if record:
+            return record, project_feedback_path(record)
+        return {"id": candidate.name, "name": candidate.name}, candidate / "FEEDBACK.md"
+    raise ValueError(f"project not found: {project}; register it in ZenRay Assets first")
+
+
+def stamp(timestamp=None):
+    moment = dt.datetime.fromisoformat(timestamp.replace("Z", "+00:00")) if timestamp else dt.datetime.now().astimezone()
+    if moment.tzinfo is None:
+        moment = moment.astimezone()
+    moment = moment.astimezone()
+    return f"{moment.day} {MONTHS[moment.month - 1]} {moment.year}, {moment:%H:%M:%S %z}"
+
+
+def safe_text(text):
+    return text.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def render_entry(text, kind, project_id, event_id, timestamp=None, metadata=None):
+    if kind not in KINDS:
+        raise ValueError(f"unknown feedback kind: {kind}")
+    text = safe_text(text)
+    if not text:
+        raise ValueError("nothing to add")
+    date = stamp(timestamp)
+    event_hash = hashlib.sha256(event_id.encode("utf-8")).hexdigest()
+    marker = f"<!-- feedback-event:{event_hash} "
+    lines = [f"\n## {date} : {KINDS[kind]}", "",
+             f"{marker}({date}) -->", f"- Project: {project_id}; kind: {kind}. ({date})"]
+    for key, value in (metadata or {}).items():
+        if value is not None and value != "":
+            value = str(value).replace("\n", " ").replace("\r", " ")
+            lines.append(f"- {key}: {value}. ({date})")
+    lines.append("")
+    lines.extend(f"> {line} ({date})" if line else ">" for line in text.split("\n"))
+    return ("\n".join(lines) + "\n").encode("utf-8"), marker.encode("utf-8")
+
+
+def write_all(fd, data):
+    view = memoryview(data)
+    while view:
+        count = os.write(fd, view)
+        if count <= 0:
+            raise OSError("feedback append did not make progress")
+        view = view[count:]
+
+
+def append_entry(path, text, kind="prompt", project_id=None, event_id=None,
+                 timestamp=None, metadata=None):
+    path = Path(path).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    project_id = project_id or path.parent.name
+    event_id = event_id or f"manual:{uuid.uuid4()}"
+    entry, marker = render_entry(text, kind, project_id, event_id, timestamp, metadata)
+    fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.lseek(fd, 0, os.SEEK_SET)
+        existing = bytearray()
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            existing.extend(chunk)
+        if marker in existing:
+            return {"added": False, "path": str(path), "eventId": event_id, "kind": kind}
+        if not existing:
+            date = stamp(timestamp)
+            write_all(fd, f"# {project_id} : project feedback, append only ({date})\n".encode("utf-8"))
+        write_all(fd, entry)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return {"added": True, "path": str(path), "eventId": event_id, "kind": kind}
+
+
+def add(path, text, kind):
+    return append_entry(path, text, kind)
+
+
+def ensure(path):
+    path = Path(path)
+    if not path.exists():
+        append_entry(path, "Project feedback initialized.", "log", event_id="initialization")
+
+
+def link_legacy(project, source, registry_paths=None):
+    record, path = resolve_project(project, registry_paths)
+    source = Path(source).expanduser().resolve()
+    if not source.is_file():
+        raise ValueError(f"legacy feedback not found: {source}")
+    data = source.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    note = (f"Historical feedback retained at [{source.name}]({source}).\n"
+            f"Original bytes: {len(data)}; SHA-256: {digest}.\n"
+            "Read this source with the canonical feedback when resuming this project.")
+    result = append_entry(path, note, "provenance", record["id"],
+                          f"legacy:{source}:{digest}", metadata={"Source": source})
+    append_entry(source, f"Future feedback is recorded in [{path.name}]({path}).",
+                 "provenance", record["id"], f"canonical-link:{path}")
+    return {**result, "legacyPath": str(source), "originalBytes": len(data), "originalSha256": digest}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=["add", "show", "path", "link-legacy"])
+    parser.add_argument("project")
+    parser.add_argument("text", nargs="?", default="")
+    parser.add_argument("--kind", default="prompt", choices=KINDS)
+    parser.add_argument("--tail", type=int, default=0)
+    parser.add_argument("--file")
+    parser.add_argument("--registry", action="append")
+    parser.add_argument("--event-id")
+    parser.add_argument("--timestamp")
+    parser.add_argument("--source")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+    try:
+        if args.action == "link-legacy":
+            result = link_legacy(args.project, args.text, args.registry)
+        else:
+            record, path = resolve_project(args.project, args.registry, args.file)
+            if args.action == "path":
+                print(path)
+                return
+            if args.action == "show":
+                if not path.exists():
+                    raise ValueError(f"feedback does not exist yet: {path}")
+                content = path.read_text(encoding="utf-8")
+                print("\n".join(content.splitlines()[-args.tail:]) if args.tail else content)
+                return
+            result = append_entry(path, args.text, args.kind, record["id"],
+                                  args.event_id, args.timestamp, {"Source": args.source})
+        print(json.dumps(result, ensure_ascii=False) if args.json else
+              f"{'added' if result['added'] else 'already recorded'}: {result['path']}")
+    except (ValueError, OSError, json.JSONDecodeError) as error:
+        print(f"feedback error: {error}", file=sys.stderr)
+        raise SystemExit(1)
+
+
+if __name__ == "__main__":
+    main()

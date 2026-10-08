@@ -1,0 +1,104 @@
+---
+name: zenray-feedback
+description: >-
+  Tenir le FEEDBACK.md d'un chantier : noter CHAQUE prompt de Matthieu, les règles qu'il donne, les mesures et les pièges payés, pour qu'aucune consigne ne se redemande. Utiliser dès le premier prompt de CHAQUE conversation, à chaque nouveau prompt, et au début d'une reprise de session. Centralise les anciens skills feedback et feedback-stack.
+---
+
+# zenray-feedback : la mémoire des consignes d'un chantier (4 October 2026)
+
+`prompt-stacking` retient les TÂCHES encore ouvertes. Ce skill retient ce que Matthieu a DIT :
+ses consignes, ses corrections, ses verdicts, ses mesures. Les deux ne se remplacent pas. (4 October 2026)
+
+## La loi (4 October 2026)
+
+**Chaque conversation commence avec un fichier de suivi `.md`, dès le premier prompt et AVANT le travail.** (4 October 2026)
+Relire et réutiliser le `FEEDBACK.md` du chantier s'il existe ; sinon le créer à la racine de son
+dossier. Sans projet, créer un dossier `~/.claude/tmp/tmp-<nom-parlant>/` et y tenir `FEEDBACK.md`. (4 October 2026)
+Chaque prompt y entre avant son exécution ; le premier fixe l'objectif dans les mots de Matthieu. (4 October 2026)
+Relire cet objectif avant chaque nouvelle action et après toute reprise ou compaction. (4 October 2026)
+
+**Dès la création du fichier, référencer son chemin absolu et son objectif dans la section existante
+`Index des feedbacks de chantier` de `~/.claude/CLAUDE.md`.** Ne pas créer une nouvelle section,
+ne pas dupliquer une référence existante et ne pas éditer les miroirs. Régénérer les miroirs avec
+`zsh ~/.claude/skills/skill-sync/scripts/mirror-agents.sh`, puis vérifier avec
+`node ~/.claude/skills/claude-md-global/scripts/extract-rules.mjs --verify` et régénérer l'index avec
+`node ~/.claude/skills/claude-md-global/scripts/build-index.mjs`. (4 October 2026)
+La création n'est terminée que lorsque le fichier existe et que sa référence figure dans le global. (4 October 2026)
+Une consigne qu'il a donnée une fois ne doit jamais lui être redemandée, ni oubliée trois prompts plus tard. (4 October 2026)
+
+## Le fichier, quatre sections, append only (4 October 2026)
+
+```markdown
+# <Projet> : feedback, prompts et règles (append only)
+
+## Prompt log            <- un bloc par demande, horodaté, l'intention dans SES mots
+## Order of work         <- ce qu'il a demandé dans l'ordre, et qui ne se réordonne pas
+## Standing rules        <- les règles permanentes, à ne jamais faire répéter
+## Log                   <- ce qui a été fait, avec la mesure qui le prouve
+```
+
+## Ce qui entre dans le Prompt log (4 October 2026)
+
+Le prompt daté, son intention en une ou deux lignes, et la citation exacte quand il corrige. Les
+corrections sont le contenu le plus précieux : « ça fait 4 fois que je te le dis » signifie qu'une
+règle manquait ici. Elle s'y écrit dans la foulée, au présent, avec sa cause. (4 October 2026)
+
+## Ce qui entre dans Standing rules (4 October 2026)
+
+Toute phrase de Matthieu qui vaut au-delà de la demande du jour : conventions de nommage, ordre de
+travail, interdits, façon de vérifier, ce qui doit être mesuré plutôt qu'estimé. Une règle par
+puce, formulée comme une consigne exécutable, jamais comme un résumé. (4 October 2026)
+
+## Le geste (4 October 2026)
+
+```bash
+python3 ~/.claude/skills/zenray-feedback/scripts/feedback.py add <projet> "<prompt ou regle>" [--kind prompt|rule|log|order]
+python3 ~/.claude/skills/zenray-feedback/scripts/feedback.py show <projet> [--tail 20]
+```
+
+`<projet>` est le chemin du dossier de chantier, ou son nom si le script le connaît déjà. Le fichier
+se crée au premier appel avec ses quatre sections. (4 October 2026)
+
+## Les déclencheurs, sans qu'il ait à le demander (4 October 2026)
+
+- Début de conversation : relire ou créer le suivi, consigner le premier prompt et vérifier sa référence dans le global. (4 October 2026)
+- Nouveau prompt sur un chantier en cours : on l'ajoute au Prompt log, puis on travaille. (4 October 2026)
+- Il corrige ou répète quelque chose : on écrit la règle dans Standing rules, avec sa cause. (4 October 2026)
+- Une mesure tranche un doute : elle va dans Log, avec son nombre. (4 October 2026)
+- Reprise de session ou compaction : on relit `FEEDBACK.md` AVANT de répondre. (4 October 2026)
+- Fin de chantier : les règles durables remontent dans le skill du domaine, le reste reste sur place. (4 October 2026)
+
+## Ce que ce skill n'est pas (4 October 2026)
+
+Ce n'est ni le journal global `~/.claude/PROGRESS.md`, qui raconte quand et quoi à travers tous les
+projets, ni la mémoire de projet `Memory1/**/<Nom>1.md`, qui porte ce que le projet SAIT. C'est la
+trace de ce que Matthieu a demandé, là où le travail se fait. (4 October 2026)
+
+## 4 October 2026 : Centralisation en zenray-feedback (4 October 2026)
+
+- Centralisation unique des anciens skills `feedback` et `feedback-stack` en `zenray-feedback`. (4 October 2026)
+- Les anciennes versions `feedback` et `feedback-stack` sont supprimées dans tous les environnements (Claude, Codex, Gemini/Antigravity, Memory). (4 October 2026)
+- L'écrivain canonique vit dans `~/.claude/skills/zenray-feedback/scripts/feedback.py`. (4 October 2026)
+
+## 2 October 2026 : Canonical project feedback and strict append (2 October 2026)
+
+- This section supersedes the earlier section-insertion instructions: the writer only opens with O_APPEND, locks the file, writes at its end and fsyncs; no existing byte changes. (2 October 2026)
+- `zenray-feedback` is the sole canonical implementation. (4 October 2026)
+- Resolve project IDs and local folders through ZenRayProgress `scripts/AssetsConfig.json` and `~/Library/Application Support/ZenRayAssets/Projects.json`; the canonical file is `~/.claude/Memory1/Projects/<project-id>/FEEDBACK.md`. (2 October 2026)
+- Use `feedback.py add <project-id> <text> --event-id <stable-event-id>` for idempotent capture; corrections append a new dated entry referencing the earlier one. (2 October 2026)
+- Preserve historical feedback in place; `feedback.py link-legacy <project-id> <absolute-source-path>` appends reciprocal references and the original byte hash instead of moving or rewriting it. (2 October 2026)
+- The local Assets service captures human prompts and final iterations from Codex and Claude transcripts when a project matches the working folder unambiguously or its session has an explicit project binding. Ambiguous sessions are never assigned by guesswork. (2 October 2026)
+- Read the canonical file and its linked historical sources on resumption; local TMP, Houdini and Unreal feedback all route to the same project ID. (2 October 2026)
+- ZenRay Assets history is a derived view of these sources and the existing global PROGRESS.md; it creates no second global journal. (2 October 2026)
+
+## 2 October 2026 : Assets initialise le feedback et la memoire de chaque projet (2 October 2026)
+
+- Pour un projet Assets, commencer ou reprendre par BeginProject.mjs, qui cree le FEEDBACK.md canonique dans Memory1/Projects/<id> et relie la session reelle. Ne pas creer un second feedback autonome dans TMP. (2 October 2026)
+- Le registre Assets et Project.json constituent l'index vivant des projets ; ils remplacent l'ajout d'une nouvelle ligne dans CLAUDE.md pour chaque nouveau projet Assets. Les anciennes references restent intactes. Doctrine de priorite 0 : CLAUDE.md, section Chaque projet commence dans ZenRay Assets V2. (2 October 2026)
+- La capture automatique des sessions reliees complete les ajouts manuels du writer. Si le service est absent, reparer ou signaler le blocage et utiliser le meme writer canonique ; ne jamais annoncer une capture ou un push non verifie. (2 October 2026)
+
+## Intégration directe dans Assets (7 October 2026)
+
+- Pour toute conversation ou projet, le point d’entrée canonique est désormais zenray-assets : BeginConversation prépare le contexte, la liaison et le feedback sans invocation supplémentaire. Les anciennes instructions de création d’un feedback TMP ou d’index dans CLAUDE.md ne gouvernent pas les projets Assets. (7 October 2026)
+- Ce dossier conserve l’implémentation unique du writer feedback.py, appelée par le service et par le skill Assets. Il reste disponible comme outil spécialisé ; aucun writer n’est dupliqué dans zenray-assets. (7 October 2026)
+- Prompts natifs déjà capturés : ne pas les recopier. Résultats de tour : checkpoint avec l’identité réelle et la liaison existante. Les limites de capture et de sauvegarde sont décrites dans le point d’entrée Assets courant. (7 October 2026)
