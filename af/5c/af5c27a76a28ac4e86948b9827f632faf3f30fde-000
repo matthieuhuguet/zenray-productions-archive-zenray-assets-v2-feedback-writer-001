@@ -202,6 +202,119 @@ def ensure(path):
         append_entry(path, "Project feedback initialized.", "log", event_id="initialization")
 
 
+# 12 October 2026: Rules.md is the condensed, readable twin of the standing rules in FEEDBACK.md.
+# FR : Rules.md est le jumeau court et lisible des règles permanentes, chargé à chaque session.
+RULES_NAME = "Rules.md"
+RULE_MARKER = re.compile(r"<!-- rule:([0-9a-f]{12}) -->")
+FEEDBACK_EVENT = re.compile(r"<!-- feedback-event:([0-9a-f]{64}) ")
+RULE_HEADER = re.compile(r"^## (\d{1,2} [A-Z][a-z]+ \d{4}), [^\n]* : Standing rule$", re.M)
+QUOTE_DATE = re.compile(r" \(\d{1,2} [A-Z][a-z]+ \d{4}, [^)]*\)$")
+
+
+def rules_path(feedback_path):
+    return Path(feedback_path).expanduser().resolve().parent / RULES_NAME
+
+
+def day(timestamp=None):
+    return stamp(timestamp).split(",")[0]
+
+
+def append_rule(path, text, project_id, event_id, date=None):
+    """Append one dated rule line; the same event never adds twice."""
+    path = Path(path).expanduser().resolve()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = " ".join(safe_text(text).split())
+    if not text:
+        raise ValueError("nothing to add")
+    date = date or day()
+    marker = f"<!-- rule:{hashlib.sha256(event_id.encode('utf-8')).hexdigest()[:12]} -->"
+    fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        os.lseek(fd, 0, os.SEEK_SET)
+        existing = bytearray()
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk:
+                break
+            existing.extend(chunk)
+        if marker.encode() in existing:
+            return {"added": False, "path": str(path)}
+        if not existing:
+            write_all(fd, rules_header(project_id, date).encode("utf-8"))
+        write_all(fd, f"- {text} ({date}) {marker}\n".encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    return {"added": True, "path": str(path)}
+
+
+def rules_header(project_id, date):
+    return (f"# {project_id} : rules, append only ({date})\n\n"
+            f"Standing rules of this project, one line each, loaded automatically at session start. "
+            f"Full history and context: FEEDBACK.md in this folder. A rule that changes gets a new line "
+            f"citing the old one. ({date})\n\n")
+
+
+def ensure_rules(path, project_id):
+    path = Path(path).expanduser().resolve()
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            write_all(fd, rules_header(project_id, day()).encode("utf-8"))
+        finally:
+            os.close(fd)
+        return True
+    return False
+
+
+def standing_rules(feedback_path):
+    """Yield (event hash, day, text) for every Standing rule entry already in FEEDBACK.md."""
+    content = Path(feedback_path).read_text(encoding="utf-8")
+    headers = list(RULE_HEADER.finditer(content))
+    for match in headers:
+        body = content[match.end():].split("\n## ", 1)[0]
+        event = FEEDBACK_EVENT.search(body)
+        quote = [QUOTE_DATE.sub("", line[2:]) for line in body.splitlines() if line.startswith("> ")]
+        if event and quote:
+            yield event.group(1), match.group(1), " ".join(quote)
+
+
+def promote(record, feedback_path):
+    """Create Rules.md and copy the rules already written in FEEDBACK.md, idempotently."""
+    target = rules_path(feedback_path)
+    created = ensure_rules(target, record["id"])
+    added = 0
+    if Path(feedback_path).exists():
+        for event_hash, date, text in standing_rules(feedback_path):
+            added += append_rule(target, text, record["id"], f"feedback-event:{event_hash}", date)["added"]
+    return {"project": record["id"], "path": str(target), "created": created, "added": added}
+
+
+def projects_for_directory(directory, projects):
+    directory = Path(directory).expanduser().resolve()
+    matches = [(len(root.parts), project) for project in projects.values()
+               for root in project_roots(project) if directory == root or root in directory.parents]
+    if not matches:
+        return []
+    depth = max(item[0] for item in matches)
+    return list({item[1]["id"]: item[1] for item in matches if item[0] == depth}.values())
+
+
+def hook_rules(stdin_text, registry_paths=None):
+    """SessionStart hook: print the Rules.md of the project that owns the working directory."""
+    cwd = json.loads(stdin_text or "{}").get("cwd") or os.getcwd()
+    blocks = []
+    for record in projects_for_directory(cwd, registry_projects(registry_paths)):
+        path = rules_path(project_feedback_path(record))
+        if path.exists() and RULE_MARKER.search(path.read_text(encoding="utf-8")):
+            blocks.append(f"Pinned rules of ZenRay Assets project {record['id']} ({path}). "
+                          f"Apply them; add new ones with feedback.py add {record['id']} \"<rule>\" --kind rule.\n\n"
+                          + path.read_text(encoding="utf-8"))
+    return "\n".join(blocks)
+
+
 def link_legacy(project, source, registry_paths=None):
     record, path = resolve_project(project, registry_paths)
     source = Path(source).expanduser().resolve()
@@ -221,8 +334,8 @@ def link_legacy(project, source, registry_paths=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["add", "show", "path", "link-legacy"])
-    parser.add_argument("project")
+    parser.add_argument("action", choices=["add", "show", "path", "link-legacy", "rules", "promote", "hook"])
+    parser.add_argument("project", nargs="?", default="")
     parser.add_argument("text", nargs="?", default="")
     parser.add_argument("--kind", default="prompt", choices=KINDS)
     parser.add_argument("--tail", type=int, default=0)
@@ -233,13 +346,35 @@ def main():
     parser.add_argument("--source")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
+    if args.action == "hook":
+        # 12 October 2026: a hook must never block a session; any failure prints nothing.
+        try:
+            print(hook_rules(sys.stdin.read(), args.registry))
+        except Exception:
+            pass
+        return
     try:
+        if args.action == "promote":
+            if args.file:
+                # 12 October 2026: an explicit file needs no registry (new projects, isolated tests).
+                results = [promote({"id": args.project}, Path(args.file).expanduser().resolve())]
+            else:
+                projects = registry_projects(args.registry)
+                records = list(projects.values()) if args.project in ("", "all") else [resolve_project(args.project, args.registry)[0]]
+                results = [promote(record, project_feedback_path(record)) for record in records]
+            print(json.dumps(results, ensure_ascii=False, indent=1) if args.json else
+                  "\n".join(f"{item['project']}: +{item['added']} rule(s){' (created)' if item['created'] else ''}" for item in results))
+            return
         if args.action == "link-legacy":
             result = link_legacy(args.project, args.text, args.registry)
         else:
             record, path = resolve_project(args.project, args.registry, args.file)
             if args.action == "path":
                 print(path)
+                return
+            if args.action == "rules":
+                target = rules_path(path)
+                print(target.read_text(encoding="utf-8") if target.exists() else f"no rules yet: {target}")
                 return
             if args.action == "show":
                 if not path.exists():
@@ -249,6 +384,12 @@ def main():
                 return
             result = append_entry(path, args.text, args.kind, record["id"],
                                   args.event_id, args.timestamp, {"Source": args.source})
+            if args.kind == "rule":
+                # 12 October 2026: a standing rule also lands, as one line, in the project's Rules.md.
+                event_hash = hashlib.sha256(result["eventId"].encode("utf-8")).hexdigest()
+                rule = append_rule(rules_path(path), args.text, record["id"],
+                                   f"feedback-event:{event_hash}", day(args.timestamp))
+                result["rulesPath"], result["ruleAdded"] = rule["path"], rule["added"]
         print(json.dumps(result, ensure_ascii=False) if args.json else
               f"{'added' if result['added'] else 'already recorded'}: {result['path']}")
     except (ValueError, OSError, json.JSONDecodeError) as error:
