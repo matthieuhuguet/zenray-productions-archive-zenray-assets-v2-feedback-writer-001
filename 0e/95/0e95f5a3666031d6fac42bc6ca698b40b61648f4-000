@@ -112,3 +112,7 @@ trace de ce que Matthieu a demandé, là où le travail se fait. (4 October 2026
 - Codex, Gemini et Antigravity n ont pas ce hook : en début de travail sur un projet, lancer `feedback.py rules <project-id>`. (12 October 2026)
 - Quand Matthieu dit « note le feedback de <projet> », « règle <projet> : … » ou « pour ne plus jamais faire l erreur » : corriger le code, puis `--kind rule`, puis, si possible, un test qui échoue quand l erreur revient. Les règles du projet vont dans Rules.md, la méthode générale reste dans le skill, la règle valable partout va dans le CLAUDE.md global. (12 October 2026)
 - Contrôle : `python3 -m unittest ~/.claude/skills/zenray-feedback/Tests/TestFeedback.py` (test `test_rules_promote_and_hook`, déduplication et résolution par dossier). (12 October 2026)
+
+## 9 November 2026 : contexte par ZenRay Past (9 November 2026)
+
+- 9 November 2026 : pour retrouver le passé de ce domaine (décisions, valeur actuelle et versions dépassées, conversations, notes du jour, commits), interroger d'abord ZenRay Past, MCP `zenray-past` (`past_recall`, `past_resume`), avant de relire de gros fichiers ; voir la priorité 0 du CLAUDE.md global. (9 November 2026)
